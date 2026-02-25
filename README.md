@@ -6,6 +6,7 @@ More than just a technical showcase, **OpenBug is designed as a lightweight visu
 
 Using procedural animation and inverse kinematics (IK), these entities move realistically across your desktop, interacting with each other and their environment without disrupting your workflow.
 
+![PixPin_2026-02-25_14-50-32](https://github.com/user-attachments/assets/243feea7-855f-4ddb-bdc3-b2ed3f202554)
 ## 🧠 Focus & Attention Management
 
 For many users, a perfectly quiet and static screen can lead to under-stimulation and distraction. OpenBug is built to counteract this by offering:
