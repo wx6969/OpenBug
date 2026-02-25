@@ -1,0 +1,15 @@
+# .NET Core
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userprefs
+*.lock.json
+# Windows
+Thumbs.db
+Desktop.ini
+# Mac
+.DS_Store
+# Visual Studio Code
+.vscode/
