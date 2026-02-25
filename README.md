@@ -1,4 +1,7 @@
-# OpenBug
+
+![PixPin_2026-02-25_17-44-04](https://github.com/user-attachments/assets/4d27bcd5-6b96-4ba0-97e8-76635e9e2655)
+
+# 🐛 OpenBug
 
 OpenBug is a unique desktop companion application that simulates a living colony of digital bugs on your screen. 
 
