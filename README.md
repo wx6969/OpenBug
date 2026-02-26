@@ -1,10 +1,16 @@
-# OpenBug
+
+![PixPin_2026-02-25_17-44-04](https://github.com/user-attachments/assets/4d27bcd5-6b96-4ba0-97e8-76635e9e2655)
+
+# 🐛 OpenBug
 
 OpenBug is a unique desktop companion application that simulates a living colony of digital bugs on your screen. 
 
 More than just a technical showcase, **OpenBug is designed as a lightweight visual companion to help improve focus and aid in attention management.** By providing non-intrusive background movement, it serves as visual "white noise," making it especially suitable for neurodivergent individuals (such as those with ADHD) or anyone who struggles to maintain focus in a completely static digital environment.
 
 Using procedural animation and inverse kinematics (IK), these entities move realistically across your desktop, interacting with each other and their environment without disrupting your workflow.
+
+![PixPin_2026-02-25_18-03-46](https://github.com/user-attachments/assets/91251b0d-bfae-4306-9293-f8ada9df2adf)
+<sub>*💡 Note: Bumped the bug count to 200 just for the demo. Absolute chaos lol.*</sub>
 
 ## 🧠 Focus & Attention Management
 
