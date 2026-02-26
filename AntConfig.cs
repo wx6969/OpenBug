@@ -18,8 +18,8 @@ namespace OpenAnt
         public static double StepDistance = 2; // Max step distance
         public static double StepHeight = 3.0; // How high the leg lifts
         public static double StepDuration = 0.01; // Time to complete a step (Slower to see it)
-        public static double LegUpdateInterval = 0.083;
-        public static double RenderUpdateInterval = 0.0417;
+        public static double LegUpdateInterval = 0.033; // ~30 FPS
+        public static double RenderUpdateInterval = 0.033; // ~30 FPS
 
         // Movement
         public static double MaxSpeed = 30; // Pixels per second (slightly slower for small ants)
@@ -59,7 +59,7 @@ namespace OpenAnt
         public static double LazyIdleChance = 0.1; // Chance to just stop when lazy
 
         // Environment Interaction
-        public static double CursorRepulsionRadius = 500;
+        public static double CursorRepulsionRadius = 125; // Reduced again (was 250)
         public static double CursorRepulsionStrength = 100; // Strong push
         public static double BrightnessThreshold = 0.1; // Above this is "bright"
         public static double LightAvoidanceStrength = 5000;

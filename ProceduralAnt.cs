@@ -197,36 +197,35 @@ namespace OpenAnt
         private void InitializeLegs()
         {
             // Attach points on Thorax
-            // Thorax Length 4.0, Width 2.5
-            // 3 pairs
-            // Offsets relative to body center (which is center of Thorax)
+            // 3 pairs of legs
+            // Adjust offsets and reach to prevent overlapping
             
-            double xFront = 1.0;
+            double xFront = 1.2;
             double xMid = 0.0;
-            double xBack = -1.0;
+            double xBack = -1.2;
             
-            double yOffset = 0.5; // Attach slightly off center
+            double yOffset = 0.8; 
             
-            // Feet targets (ideal)
-            // Front: Forward + Out
-            // Mid: Out
-            // Back: Back + Out
-            double reachX = 3.5;
-            double reachY = 5.0;
+            // Reach (Ideal foot distance)
+            // Front legs reach forward and out
+            // Mid legs reach strictly out
+            // Back legs reach back and out
+            double reachX = 4.0;
+            double reachY = 6.0;
 
             // Leg 0: Left Front
             _legs.Add(new AntLeg(_canvas, new Point(xFront, -yOffset), new Vector(reachX, -reachY), false, _antColor));
             // Leg 1: Left Mid
-            _legs.Add(new AntLeg(_canvas, new Point(xMid, -yOffset), new Vector(0, -reachY * 1.1), false, _antColor));
+            _legs.Add(new AntLeg(_canvas, new Point(xMid, -yOffset), new Vector(0, -reachY * 1.2), false, _antColor));
             // Leg 2: Left Back
-            _legs.Add(new AntLeg(_canvas, new Point(xBack, -yOffset), new Vector(-reachX * 0.8, -reachY * 1.2), false, _antColor));
+            _legs.Add(new AntLeg(_canvas, new Point(xBack, -yOffset), new Vector(-reachX, -reachY), false, _antColor));
             
             // Leg 3: Right Front
             _legs.Add(new AntLeg(_canvas, new Point(xFront, yOffset), new Vector(reachX, reachY), true, _antColor));
             // Leg 4: Right Mid
-            _legs.Add(new AntLeg(_canvas, new Point(xMid, yOffset), new Vector(0, reachY * 1.1), true, _antColor));
+            _legs.Add(new AntLeg(_canvas, new Point(xMid, yOffset), new Vector(0, reachY * 1.2), true, _antColor));
             // Leg 5: Right Back
-            _legs.Add(new AntLeg(_canvas, new Point(xBack, yOffset), new Vector(-reachX * 0.8, reachY * 1.2), true, _antColor));
+            _legs.Add(new AntLeg(_canvas, new Point(xBack, yOffset), new Vector(-reachX, reachY), true, _antColor));
         }
 
         private double _interactionTimer = 0;
@@ -243,8 +242,15 @@ namespace OpenAnt
         public void Update(double deltaTime, List<ProceduralAnt> neighbors, Point cursorPos)
         {
             UpdateBehavior(deltaTime, neighbors, cursorPos);
-            UpdateLegs(deltaTime);
-            UpdateBodyParts();
+            UpdatePhysics(deltaTime);
+            UpdateVisuals(deltaTime);
+            
+            _legUpdateTimer += deltaTime;
+            if (_legUpdateTimer >= AntConfig.LegUpdateInterval)
+            {
+                UpdateLegs();
+                _legUpdateTimer = 0;
+            }
         }
 
         private void UpdateBehavior(double deltaTime, List<ProceduralAnt> neighbors, Point cursorPos)
@@ -317,28 +323,6 @@ namespace OpenAnt
 
             // Apply social/environmental influences to target rotation every frame
             ApplySteeringForces(neighbors, cursorPos);
-
-            double rotDiff = _targetRotation - Rotation;
-            while (rotDiff > 180) rotDiff -= 360;
-            while (rotDiff < -180) rotDiff += 360;
-
-            // Apply turn speed modifier
-            double currentTurnSpeed = AntConfig.TurnSpeed * _turnModifier;
-            double turnAmount = Math.Sign(rotDiff) * Math.Min(Math.Abs(rotDiff), currentTurnSpeed * deltaTime);
-            Rotation += turnAmount;
-
-            // Sharper speed changes: big interpolation factor, clamped to 1
-            double t = deltaTime * 12.0;
-            if (t > 1.0) t = 1.0;
-            _currentSpeed = MathUtils.Lerp(_currentSpeed, _targetSpeed, t);
-
-            double speed = _currentSpeed;
-            double rad = MathUtils.DegreesToRadians(Rotation);
-            Vector forward = new Vector(Math.Cos(rad), Math.Sin(rad));
-            Position += forward * speed * deltaTime;
-
-            // Boundary Check: Bounce
-            HandleBoundaries();
         }
 
         private void ApplySteeringForces(List<ProceduralAnt> neighbors, Point cursorPos)
@@ -346,7 +330,14 @@ namespace OpenAnt
             Vector totalForce = new Vector(0, 0);
 
             // 1. Cursor Repulsion (Highest Priority fear)
-            Vector toCursor = cursorPos - Position;
+            // Need to convert cursor position from Screen coordinates to Window/Canvas coordinates
+            // Since window is maximized and covers screen, they should be close, but let's be precise
+            // Actually cursorPos passed in is already screen coordinates.
+            // If the window is full screen transparent, PointFromScreen might be needed if DPI scaling is an issue.
+            // But usually for overlay windows, direct mapping works if DPI aware.
+            // Let's assume cursorPos is correct relative to the canvas for now.
+            
+            Vector toCursor = Position - cursorPos; // Vector FROM cursor TO ant
             double distToCursorSq = toCursor.LengthSquared;
             double cursorRepulsionRadSq = AntConfig.CursorRepulsionRadius * AntConfig.CursorRepulsionRadius;
             
@@ -356,16 +347,21 @@ namespace OpenAnt
                 _isLazy = false;
                 
                 double dist = Math.Sqrt(distToCursorSq);
-                Vector fleeDir = -toCursor;
+                Vector fleeDir = toCursor; // Flee direction is AWAY from cursor
                 fleeDir.Normalize();
-                // Strong exponential repulsion
-                totalForce += fleeDir * AntConfig.CursorRepulsionStrength * (1.0 - dist / AntConfig.CursorRepulsionRadius) * 5.0;
                 
-                // If very close to cursor, force move state
-                if (dist < AntConfig.CursorRepulsionRadius * 0.5)
+                // Strong exponential repulsion
+                // Force grows stronger as distance decreases
+                double repulsionStrength = AntConfig.CursorRepulsionStrength * (1.0 - dist / AntConfig.CursorRepulsionRadius);
+                totalForce += fleeDir * repulsionStrength * 10.0; // Reduced multiplier from 20.0 to 10.0
+                
+                // If very close to cursor, force move state and high speed
+                if (dist < AntConfig.CursorRepulsionRadius * 0.8)
                 {
                     _moveState = AntMoveState.Moving;
-                    _currentSpeed = AntConfig.MaxSpeed * 1.5; // Panic speed
+                    _currentSpeed = AntConfig.MaxSpeed * 1.7; // Reduced panic speed from 2.0 to 1.7
+                    _targetSpeed = _currentSpeed;
+                    _stateTimer = 0.5; // Maintain panic for a bit
                 }
             }
 
@@ -418,8 +414,8 @@ namespace OpenAnt
                         _interactionCooldownTimer <= 0 && other._interactionCooldownTimer <= 0 &&
                         dist < AntConfig.InteractionRadius)
                     {
-                        // 5% chance to stop and interact per frame if close
-                        if (_random.NextDouble() < 0.05)
+                        // Reduced chance to stop and interact: from 5% to 1% per frame
+                        if (_random.NextDouble() < 0.01)
                         {
                             StartInteraction();
                             other.StartInteraction();
@@ -649,56 +645,77 @@ namespace OpenAnt
             }
         }
 
-        private void HandleBoundaries()
+        private void UpdatePhysics(double deltaTime)
         {
-            bool bounced = false;
-            if (Position.X < 0) 
+            // Update rotation
+            // Lerp rotation to target
+            double angleDiff = _targetRotation - Rotation;
+            // Normalize angle to -180 to 180
+            while (angleDiff > 180) angleDiff -= 360;
+            while (angleDiff < -180) angleDiff += 360;
+            
+            // Turn speed limit
+            double turnAmount = AntConfig.TurnSpeed * deltaTime * _turnModifier;
+            
+            if (Math.Abs(angleDiff) < turnAmount)
             {
-                Position = new Point(0, Position.Y);
-                double rad = MathUtils.DegreesToRadians(Rotation);
-                double dx = Math.Cos(rad);
-                double dy = Math.Sin(rad);
-                dx = Math.Abs(dx); // Bounce right
-                Rotation = MathUtils.RadiansToDegrees(Math.Atan2(dy, dx));
-                bounced = true;
+                Rotation = _targetRotation;
             }
-            else if (Position.X > _canvas.ActualWidth)
+            else
             {
-                Position = new Point(_canvas.ActualWidth, Position.Y);
-                double rad = MathUtils.DegreesToRadians(Rotation);
-                double dx = Math.Cos(rad);
-                double dy = Math.Sin(rad);
-                dx = -Math.Abs(dx); // Bounce left
-                Rotation = MathUtils.RadiansToDegrees(Math.Atan2(dy, dx));
-                bounced = true;
+                Rotation += Math.Sign(angleDiff) * turnAmount;
             }
+            
+            // Update speed
+            // Accelerate/Decelerate
+            double accel = AntConfig.MaxSpeed * 2.0 * deltaTime;
+            if (_currentSpeed < _targetSpeed)
+            {
+                _currentSpeed += accel;
+                if (_currentSpeed > _targetSpeed) _currentSpeed = _targetSpeed;
+            }
+            else if (_currentSpeed > _targetSpeed)
+            {
+                _currentSpeed -= accel;
+                if (_currentSpeed < _targetSpeed) _currentSpeed = _targetSpeed;
+            }
+            
+            // Move
+            double rad = Rotation * Math.PI / 180.0;
+            Vector velocity = new Vector(Math.Cos(rad), Math.Sin(rad)) * _currentSpeed;
+            
+            Position += velocity * deltaTime;
+            
+            // Keep in bounds (Steer away from edges instead of hard bounce)
+             double padding = 50; // Start steering earlier
+             double width = _canvas.ActualWidth;
+             double height = _canvas.ActualHeight;
+             
+             // Soft boundary steering
+             if (Position.X < padding)
+             {
+                 _targetRotation += 5.0; // Turn right
+             }
+             else if (Position.X > width - padding)
+             {
+                 _targetRotation += 5.0; // Turn right
+             }
+             
+             if (Position.Y < padding)
+             {
+                 _targetRotation += 5.0;
+             }
+             else if (Position.Y > height - padding)
+             {
+                 _targetRotation += 5.0;
+             }
 
-            if (Position.Y < 0)
-            {
-                Position = new Point(Position.X, 0);
-                double rad = MathUtils.DegreesToRadians(Rotation);
-                double dx = Math.Cos(rad);
-                double dy = Math.Sin(rad);
-                dy = Math.Abs(dy); // Bounce down
-                Rotation = MathUtils.RadiansToDegrees(Math.Atan2(dy, dx));
-                bounced = true;
-            }
-            else if (Position.Y > _canvas.ActualHeight)
-            {
-                Position = new Point(Position.X, _canvas.ActualHeight);
-                double rad = MathUtils.DegreesToRadians(Rotation);
-                double dx = Math.Cos(rad);
-                double dy = Math.Sin(rad);
-                dy = -Math.Abs(dy); // Bounce up
-                Rotation = MathUtils.RadiansToDegrees(Math.Atan2(dy, dx));
-                bounced = true;
-            }
-
-            if (bounced)
-            {
-                _targetRotation = Rotation;
-            }
-        }
+             // Hard boundary clamp (failsafe)
+             if (Position.X < 0) Position = new Point(0, Position.Y);
+             if (Position.X > width) Position = new Point(width, Position.Y);
+             if (Position.Y < 0) Position = new Point(Position.X, 0);
+             if (Position.Y > height) Position = new Point(Position.X, height);
+         }
 
         private void UpdateTrailLeader(List<ProceduralAnt> neighbors)
         {
@@ -766,83 +783,134 @@ namespace OpenAnt
             }
         }
 
-        private void UpdateLegs(double deltaTime)
+        private void UpdateLegs()
         {
-            _legUpdateTimer += deltaTime;
-            if (_legUpdateTimer < AntConfig.LegUpdateInterval)
-            {
-                return;
-            }
-            double legDeltaTime = _legUpdateTimer;
-            _legUpdateTimer = 0;
+            if (_legs.Count == 0) return;
 
-            if (_moveState == AntMoveState.Moving)
+            double rad = Rotation * Math.PI / 180.0;
+            Vector velocity = new Vector(Math.Cos(rad), Math.Sin(rad)) * _currentSpeed;
+
+            // Gait
+            // Tripod Gait: Legs 0, 4, 2 move together; 1, 3, 5 move together
+            // Group A: 0, 4, 2 (Left Front, Right Mid, Left Back)
+            // Group B: 1, 3, 5 (Left Mid, Right Front, Right Back)
+            
+            // Only update gait if moving
+            if (_currentSpeed > 0.1)
             {
-                _gaitTimer += legDeltaTime;
-                double phaseDuration = AntConfig.StepDuration * 1.5; 
+                // Smoother gait at slow speeds:
+                // Increase multiplier to make legs move faster relative to body speed
+                // This prevents "sliding" feeling
+                _gaitTimer += AntConfig.LegUpdateInterval * (_currentSpeed / AntConfig.MaxSpeed) * 8.0; 
                 
-                if (_gaitTimer > phaseDuration)
+                // Add base speed so legs don't freeze at very low speeds
+                if (_currentSpeed < AntConfig.MaxSpeed * 0.5)
+                {
+                    _gaitTimer += AntConfig.LegUpdateInterval * 0.8; // Increased base cadence
+                }
+                
+                // Boost leg speed when panicking (high speed)
+                if (_currentSpeed > AntConfig.MaxSpeed * 1.2)
+                {
+                    _gaitTimer += AntConfig.LegUpdateInterval * 2.0; // Extra boost for panic run
+                }
+
+                if (_gaitTimer > 1.0)
                 {
                     _gaitTimer = 0;
-                    _gaitPhase = 1 - _gaitPhase;
+                    _gaitPhase = 1 - _gaitPhase; // Toggle 0 or 1
                 }
             }
 
-            double rad = MathUtils.DegreesToRadians(Rotation);
-            Vector velocity = new Vector(Math.Cos(rad), Math.Sin(rad)) * _currentSpeed;
-
+            // Update each leg
+            // Leg indices: 0:LF, 1:LM, 2:LB, 3:RF, 4:RM, 5:RB
+            
             for (int i = 0; i < _legs.Count; i++)
             {
-                bool allowed = false;
+                bool canStep = false;
                 
-                if (_moveState == AntMoveState.Idle)
+                // Determine if this leg belongs to the current active gait group
+                // Group A (Phase 0): 0, 4, 2
+                // Group B (Phase 1): 1, 3, 5
+                
+                if (_gaitPhase == 0)
                 {
-                    // Allow small readjustments if really needed
-                    allowed = true; 
+                    if (i == 0 || i == 4 || i == 2) canStep = true;
                 }
                 else
                 {
-                    if (_gaitPhase == 0)
-                    {
-                        if (i == 0 || i == 4 || i == 2) allowed = true;
-                    }
-                    else
-                    {
-                        if (i == 3 || i == 1 || i == 5) allowed = true;
-                    }
+                    if (i == 1 || i == 3 || i == 5) canStep = true;
                 }
-
-                _legs[i].Update(Position, Rotation, velocity, allowed);
+                
+                _legs[i].Update(Position, Rotation, velocity, canStep);
             }
+        }
+
+        private void UpdateVisuals(double deltaTime)
+        {
+            // Position
+            Canvas.SetLeft(_head, Position.X - AntConfig.HeadSize/2);
+            Canvas.SetTop(_head, Position.Y - AntConfig.HeadSize/2);
+            
+            Canvas.SetLeft(_thorax, Position.X - AntConfig.ThoraxLength/2);
+            Canvas.SetTop(_thorax, Position.Y - AntConfig.ThoraxWidth/2);
+            
+            Canvas.SetLeft(_abdomen, Position.X - AntConfig.AbdomenLength/2);
+            Canvas.SetTop(_abdomen, Position.Y - AntConfig.AbdomenWidth/2);
+
+            // Rotation
+            var rotateTransform = new RotateTransform(Rotation, AntConfig.ThoraxLength/2, AntConfig.ThoraxWidth/2);
+            // We need to rotate around the center of the ant (Thorax center)
+            // But individual parts need local rotation + global position
+            // Simpler: Just rotate the whole group if we had one.
+            // Since we don't, we update RenderTransforms of parts.
+            
+            // Actually, we need to position parts relative to body center, then rotate.
+            // Simplified for now: Just rotate parts around their own centers? No.
+            // We need to calculate world positions of parts based on Body Rotation.
+            
+            UpdateBodyParts();
         }
 
         private void UpdateBodyParts()
         {
-            // Calculate offsets based on actual sizes to ensure proper connection
+            // Calculate part positions based on body position and rotation
+            // Center is Position
+            
+            // Re-calculate offsets based on actual sizes to ensure proper connection and overlap
             double headRadius = AntConfig.HeadSize / 2;
             double thoraxHalfLength = AntConfig.ThoraxLength / 2;
             double abdomenHalfLength = AntConfig.AbdomenLength / 2;
             
-            // Overlap factor (0.8 means 20% overlap)
-            double overlap = 0.8;
+            // Overlap factor (0.8 means 20% overlap to hide gaps)
+            double overlap = 0.8; 
             
-            double headOffset = (thoraxHalfLength + headRadius) * overlap;
-            double abdomenOffset = -(thoraxHalfLength + abdomenHalfLength) * overlap;
+            // Relative X positions (Head is +X, Abdomen is -X)
+            double headOffsetX = (thoraxHalfLength + headRadius) * overlap;
+            double abdomenOffsetX = -(thoraxHalfLength + abdomenHalfLength) * overlap;
 
-            UpdatePart(_head, new Point(headOffset, 0));
-            UpdatePart(_thorax, new Point(0, 0));
-            UpdatePart(_abdomen, new Point(abdomenOffset, 0));
+            // Head is forward (positive X relative to body)
+            Point headPos = GetWorldPosition(new Point(headOffsetX, 0));
+            // Thorax is center
+            Point thoraxPos = Position;
+            // Abdomen is back
+            Point abdomenPos = GetWorldPosition(new Point(abdomenOffsetX, 0));
+
+            UpdatePart(_head, headPos, Rotation, AntConfig.HeadSize, AntConfig.HeadSize);
+            UpdatePart(_thorax, thoraxPos, Rotation, AntConfig.ThoraxLength, AntConfig.ThoraxWidth);
+            UpdatePart(_abdomen, abdomenPos, Rotation, AntConfig.AbdomenLength, AntConfig.AbdomenWidth);
         }
 
-        private void UpdatePart(Ellipse part, Point localOffset)
+        private void UpdatePart(Ellipse part, Point center, double rotation, double width, double height)
         {
-            Point worldPos = GetWorldPosition(localOffset);
+            if (part == null) return;
             
-            // Rotate part itself
-            part.RenderTransform = new RotateTransform(Rotation, part.Width/2, part.Height/2);
+            // Position top-left
+            Canvas.SetLeft(part, center.X - width/2);
+            Canvas.SetTop(part, center.Y - height/2);
             
-            Canvas.SetLeft(part, worldPos.X - part.Width / 2);
-            Canvas.SetTop(part, worldPos.Y - part.Height / 2);
+            // Rotation
+            part.RenderTransform = new RotateTransform(rotation, width/2, height/2);
         }
 
         private Point GetWorldPosition(Point localPos)

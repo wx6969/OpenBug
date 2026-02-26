@@ -29,6 +29,11 @@ namespace OpenAnt
         public MainWindow()
         {
             InitializeComponent();
+            
+            // Force Software Rendering to avoid high GPU usage on transparent windows
+            // This moves the burden to CPU, which is usually negligible for this app
+            RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
+            
             Loaded += OnLoaded;
             Closing += OnClosing;
         }
@@ -57,6 +62,7 @@ namespace OpenAnt
             _spawnTimer.Start();
 
             // Start Game Loop
+            // RenderOptions.SetEdgeMode(WorldCanvas, EdgeMode.Aliased); // Revert to default (Antialiased)
             CompositionTarget.Rendering += OnRendering;
         }
 
@@ -290,13 +296,16 @@ namespace OpenAnt
             }
 
             var deltaTime = (args.RenderingTime - _lastRenderTime).TotalSeconds;
+            // Cap at 60fps maximum
+            if (deltaTime < 0.016) return;
+            
             _lastRenderTime = args.RenderingTime;
             _updateAccumulator += deltaTime;
             if (_updateAccumulator < AntConfig.RenderUpdateInterval)
             {
                 return;
             }
-            deltaTime = _updateAccumulator;
+            deltaTime = _updateAccumulator; // Use accumulated time for physics step
             _updateAccumulator = 0;
 
             // Update Spatial Grid
@@ -306,9 +315,10 @@ namespace OpenAnt
                 _spatialGrid.Add(ant);
             }
 
-            // Get global cursor position
+            // Get global cursor position and convert to local coordinates
             var screenCursor = WinForms.Cursor.Position;
-            var cursorPos = new Point(screenCursor.X, screenCursor.Y);
+            var pointFromScreen = this.PointFromScreen(new Point(screenCursor.X, screenCursor.Y));
+            var cursorPos = pointFromScreen;
 
             foreach (var ant in _ants)
             {
