@@ -1,8 +1,6 @@
 using System;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Media;
-using System.Windows.Shapes;
 using System.Collections.Generic;
 using System.Windows.Threading;
 using System.Diagnostics;
@@ -18,6 +16,18 @@ namespace OpenAnt
         private SpatialGrid _spatialGrid = null!;
         private TimeSpan _lastRenderTime;
         private double _updateAccumulator;
+
+        private const int MaxBugCount = 500;
+        private WinForms.ToolStripMenuItem? _bugCountItem;
+        private WinForms.ToolStripMenuItem? _addBugItem;
+        private WinForms.ToolStripMenuItem? _removeBugItem;
+        private PheromoneField? _pheromones;
+        private double _lastWorldW;
+        private double _lastWorldH;
+        private bool _suppressBugMenuUpdates;
+
+        private double _swarmEventTimer;
+        private double _swarmEventCooldown;
         
         // New fields
         private WinForms.NotifyIcon _notifyIcon = null!;
@@ -44,7 +54,7 @@ namespace OpenAnt
 
             // Initialize Spatial Grid
             // Cell size 50 is slightly larger than PerceptionRadius (40)
-            _spatialGrid = new SpatialGrid(WorldCanvas.ActualWidth, WorldCanvas.ActualHeight, 50);
+            _spatialGrid = new SpatialGrid(WorldSurface.ActualWidth, WorldSurface.ActualHeight, 50);
 
             // Initialize NotifyIcon
             InitializeNotifyIcon();
@@ -64,6 +74,12 @@ namespace OpenAnt
             // Start Game Loop
             // RenderOptions.SetEdgeMode(WorldCanvas, EdgeMode.Aliased); // Revert to default (Antialiased)
             CompositionTarget.Rendering += OnRendering;
+
+            WorldSurface.Ants = _ants;
+            UpdateBugMenuItems();
+
+            EnsurePheromoneField();
+            _swarmEventCooldown = 90.0 + _random.NextDouble() * 120.0;
         }
 
         private void InitializeNotifyIcon()
@@ -82,8 +98,17 @@ namespace OpenAnt
             autoStartItem.Checked = IsAutoStartEnabled();
             autoStartItem.CheckedChanged += (s, e) => SetAutoStart(autoStartItem.Checked);
 
+            _bugCountItem = new WinForms.ToolStripMenuItem($"Bugs: {_ants.Count}");
+            _bugCountItem.Click += (s, e) => Dispatcher.Invoke(PromptAndSetBugCount);
+
+            _addBugItem = new WinForms.ToolStripMenuItem("Add Bug (+1)");
+            _addBugItem.Click += (s, e) => Dispatcher.Invoke(() => SetBugCount(_ants.Count + 1));
+
+            _removeBugItem = new WinForms.ToolStripMenuItem("Remove Bug (-1)");
+            _removeBugItem.Click += (s, e) => Dispatcher.Invoke(() => SetBugCount(_ants.Count - 1));
+
             var hideItem = new WinForms.ToolStripMenuItem("Hide");
-            hideItem.Click += (s, e) => ToggleHide(hideItem);
+            hideItem.Click += (s, e) => Dispatcher.Invoke(() => ToggleHide(hideItem));
             var exitItem = new WinForms.ToolStripMenuItem("Quit");
             exitItem.Click += (s, e) => 
             {
@@ -93,10 +118,16 @@ namespace OpenAnt
             };
             
             contextMenu.Items.Add(autoStartItem);
+            contextMenu.Items.Add(new WinForms.ToolStripSeparator());
+            contextMenu.Items.Add(_bugCountItem);
+            contextMenu.Items.Add(_addBugItem);
+            contextMenu.Items.Add(_removeBugItem);
+            contextMenu.Items.Add(new WinForms.ToolStripSeparator());
             contextMenu.Items.Add(hideItem);
             contextMenu.Items.Add(exitItem);
             
             _notifyIcon.ContextMenuStrip = contextMenu;
+            UpdateBugMenuItems();
         }
 
         private static string? GetExecutablePath()
@@ -174,6 +205,8 @@ namespace OpenAnt
                 }
                 // Pause spawning
                 _spawnTimer.Stop();
+                WorldSurface.Ants = Array.Empty<ProceduralAnt>();
+                WorldSurface.InvalidateVisual();
                 menuItem.Text = "Show";
             }
             else
@@ -185,15 +218,124 @@ namespace OpenAnt
                 }
                 // Resume spawning
                 _spawnTimer.Start();
+                WorldSurface.Ants = _ants;
+                WorldSurface.InvalidateVisual();
                 menuItem.Text = "Hide";
             }
+
+            UpdateBugMenuItems();
         }
 
         private void OnSpawnTimerTick(object? sender, EventArgs e)
         {
             // Spawn 1 ant per interval
-            if (_ants.Count >= 50) return;
+            if (_ants.Count >= MaxBugCount) return;
             SpawnAnt(isInitial: false);
+            UpdateBugMenuItems();
+        }
+
+        private void SetBugCount(int targetCount)
+        {
+            if (targetCount < 0) targetCount = 0;
+            if (targetCount > MaxBugCount) targetCount = MaxBugCount;
+            if (targetCount == _ants.Count) return;
+
+            _suppressBugMenuUpdates = true;
+            try
+            {
+                while (_ants.Count < targetCount)
+                {
+                    SpawnAnt(isInitial: false);
+                }
+
+                while (_ants.Count > targetCount)
+                {
+                    _ants.RemoveAt(_ants.Count - 1);
+                }
+            }
+            finally
+            {
+                _suppressBugMenuUpdates = false;
+            }
+
+            if (!_areAntsHidden)
+            {
+                WorldSurface.Ants = _ants;
+                WorldSurface.InvalidateVisual();
+            }
+
+            UpdateBugMenuItems();
+        }
+
+        private void PromptAndSetBugCount()
+        {
+            int? desired = PromptForBugCount(_ants.Count);
+            if (desired == null) return;
+            int value = desired.Value;
+            if (value > MaxBugCount) value = MaxBugCount;
+            if (value < 0) value = 0;
+            SetBugCount(value);
+        }
+
+        private int? PromptForBugCount(int currentCount)
+        {
+            using var form = new WinForms.Form();
+            form.Text = "Set Bugs";
+            form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+            form.ShowIcon = false;
+            form.ShowInTaskbar = false;
+            form.StartPosition = WinForms.FormStartPosition.CenterScreen;
+            form.Width = 260;
+            form.Height = 140;
+
+            var label = new WinForms.Label();
+            label.Left = 12;
+            label.Top = 12;
+            label.Width = 220;
+            label.Text = $"0 - {MaxBugCount}";
+
+            var input = new WinForms.NumericUpDown();
+            input.Left = 12;
+            input.Top = 36;
+            input.Width = 220;
+            input.Minimum = 0;
+            input.Maximum = MaxBugCount;
+            input.Value = Math.Min(MaxBugCount, Math.Max(0, currentCount));
+
+            var ok = new WinForms.Button();
+            ok.Text = "OK";
+            ok.Left = 72;
+            ok.Top = 72;
+            ok.Width = 70;
+            ok.DialogResult = WinForms.DialogResult.OK;
+
+            var cancel = new WinForms.Button();
+            cancel.Text = "Cancel";
+            cancel.Left = 156;
+            cancel.Top = 72;
+            cancel.Width = 70;
+            cancel.DialogResult = WinForms.DialogResult.Cancel;
+
+            form.Controls.Add(label);
+            form.Controls.Add(input);
+            form.Controls.Add(ok);
+            form.Controls.Add(cancel);
+            form.AcceptButton = ok;
+            form.CancelButton = cancel;
+
+            var result = form.ShowDialog();
+            if (result != WinForms.DialogResult.OK) return null;
+            return (int)input.Value;
+        }
+
+        private void UpdateBugMenuItems()
+        {
+            if (_bugCountItem == null || _addBugItem == null || _removeBugItem == null) return;
+            _bugCountItem.Text = $"Bugs: {_ants.Count}";
+            _addBugItem.Enabled = _ants.Count < MaxBugCount;
+            _removeBugItem.Enabled = _ants.Count > 0;
         }
 
         private void SpawnAnt(bool isInitial)
@@ -208,11 +350,11 @@ namespace OpenAnt
             // Behavior Type
             double roll = _random.NextDouble();
             AntBehaviorType type;
-            if (roll < 0.1) type = AntBehaviorType.EdgeDweller; // 10% (was 60%)
-            else if (roll < 0.7) type = AntBehaviorType.Social; // 60% (was 30%)
-            else type = AntBehaviorType.Loner;                  // 30% (was 10%)
+            if (roll < 0.15) type = AntBehaviorType.EdgeDweller;
+            else if (roll < 0.85) type = AntBehaviorType.Social;
+            else type = AntBehaviorType.Loner;
 
-            var ant = new ProceduralAnt(WorldCanvas, type, vividness);
+            var ant = new ProceduralAnt(type, vividness);
 
             // Position
             Point pos;
@@ -221,8 +363,8 @@ namespace OpenAnt
             if (isInitial)
             {
                 // Random position within bounds
-                double x = _random.NextDouble() * (WorldCanvas.ActualWidth - 20) + 10;
-                double y = _random.NextDouble() * (WorldCanvas.ActualHeight - 20) + 10;
+                double x = _random.NextDouble() * (WorldSurface.ActualWidth - 20) + 10;
+                double y = _random.NextDouble() * (WorldSurface.ActualHeight - 20) + 10;
                 pos = new Point(x, y);
                 rotation = _random.NextDouble() * 360.0;
             }
@@ -234,8 +376,8 @@ namespace OpenAnt
                 double offset = 20; // Spawn slightly outside or on edge
                 
                 // Canvas dimensions might be large (virtual), but we use ActualWidth/Height
-                double w = WorldCanvas.ActualWidth;
-                double h = WorldCanvas.ActualHeight;
+                double w = WorldSurface.ActualWidth;
+                double h = WorldSurface.ActualHeight;
 
                 switch (side)
                 {
@@ -271,6 +413,7 @@ namespace OpenAnt
             }
             
             _ants.Add(ant);
+            if (!_suppressBugMenuUpdates) UpdateBugMenuItems();
         }
 
         private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
@@ -320,12 +463,95 @@ namespace OpenAnt
             var pointFromScreen = this.PointFromScreen(new Point(screenCursor.X, screenCursor.Y));
             var cursorPos = pointFromScreen;
 
+            EnsurePheromoneField();
+            _pheromones?.Update(deltaTime);
+            bool swarmActive = UpdateSwarmDirector(deltaTime);
+
             foreach (var ant in _ants)
             {
                 // Query neighbors from grid (O(1) lookup + small local search)
                 // Radius 50 covers PerceptionRadius (40)
                 var neighbors = _spatialGrid.Query(ant.Position, 50);
-                ant.Update(deltaTime, neighbors, cursorPos);
+                ant.Update(deltaTime, neighbors, cursorPos, WorldSurface.ActualWidth, WorldSurface.ActualHeight, _pheromones, swarmActive);
+            }
+
+            if (_pheromones != null)
+            {
+                for (int i = 0; i < _ants.Count; i++)
+                {
+                    if (!_ants[i].IsVisible) continue;
+                    Vector dir = _ants[i].Forward;
+                    double amount = AntConfig.PheromoneDepositPerSecond * deltaTime * _ants[i].PheromoneDepositScale;
+                    _pheromones.Deposit(_ants[i].Position, dir, amount);
+                }
+            }
+
+            WorldSurface.InvalidateVisual();
+        }
+
+        private bool UpdateSwarmDirector(double deltaTime)
+        {
+            if (deltaTime <= 0) return _swarmEventTimer > 0;
+
+            if (_swarmEventTimer > 0)
+            {
+                _swarmEventTimer -= deltaTime;
+                if (_swarmEventTimer <= 0)
+                {
+                    _swarmEventTimer = 0;
+                    _swarmEventCooldown = 300.0 + _random.NextDouble() * 420.0;
+                }
+
+                return _swarmEventTimer > 0;
+            }
+
+            if (_swarmEventCooldown > 0)
+            {
+                _swarmEventCooldown -= deltaTime;
+                return false;
+            }
+
+            if (_pheromones == null) return false;
+            if (_ants.Count < 20) return false;
+
+            ProceduralAnt? candidate = null;
+            for (int i = 0; i < 6; i++)
+            {
+                int idx = _random.Next(_ants.Count);
+                var a = _ants[idx];
+                if (!a.IsVisible) continue;
+                if (a.BehaviorType != AntBehaviorType.Social) continue;
+                candidate = a;
+                break;
+            }
+
+            if (candidate == null) return false;
+
+            var s = _pheromones.Sample(candidate.Position);
+            double extra = Math.Max(0, _ants.Count - 50) / 150.0;
+            if (extra > 3) extra = 3;
+            double requiredStrength = 5.0 + extra;
+            if (s.strength < requiredStrength) return false;
+
+            double triggerProb = deltaTime / 480.0;
+            if (triggerProb <= 0) return false;
+            if (_random.NextDouble() >= triggerProb) return false;
+
+            _swarmEventTimer = 6.0 + _random.NextDouble() * 8.0;
+            return true;
+        }
+
+        private void EnsurePheromoneField()
+        {
+            double w = WorldSurface.ActualWidth;
+            double h = WorldSurface.ActualHeight;
+            if (w < 1 || h < 1) return;
+
+            if (_pheromones == null || Math.Abs(_lastWorldW - w) > 1 || Math.Abs(_lastWorldH - h) > 1)
+            {
+                _pheromones = new PheromoneField(w, h, AntConfig.PheromoneCellSize);
+                _lastWorldW = w;
+                _lastWorldH = h;
             }
         }
     }

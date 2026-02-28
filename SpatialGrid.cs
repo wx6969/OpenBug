@@ -13,19 +13,20 @@ namespace OpenAnt
         private double _cellSize;
         
         // Reusable list to avoid allocation
-        private List<ProceduralAnt> _queryResult = new List<ProceduralAnt>(64);
+        private List<ProceduralAnt> _queryResult = new List<ProceduralAnt>(32);
 
         public SpatialGrid(double width, double height, double cellSize)
         {
+            if (cellSize <= 0) cellSize = 1;
             _cellSize = cellSize;
             
-            _cols = (int)Math.Ceiling(width / cellSize);
-            _rows = (int)Math.Ceiling(height / cellSize);
+            _cols = Math.Max(1, (int)Math.Ceiling(width / cellSize));
+            _rows = Math.Max(1, (int)Math.Ceiling(height / cellSize));
             
             _cells = new List<ProceduralAnt>[_cols * _rows];
             for (int i = 0; i < _cells.Length; i++)
             {
-                _cells[i] = new List<ProceduralAnt>(16); // Initial capacity
+                _cells[i] = new List<ProceduralAnt>(4);
             }
         }
 

@@ -18,8 +18,8 @@ namespace OpenAnt
         public static double StepDistance = 2; // Max step distance
         public static double StepHeight = 3.0; // How high the leg lifts
         public static double StepDuration = 0.01; // Time to complete a step (Slower to see it)
-        public static double LegUpdateInterval = 0.033; // ~30 FPS
-        public static double RenderUpdateInterval = 0.033; // ~30 FPS
+        public static double LegUpdateInterval = 0.0416667; // ~24 FPS
+        public static double RenderUpdateInterval = 0.0416667; // ~24 FPS
 
         // Movement
         public static double MaxSpeed = 30; // Pixels per second (slightly slower for small ants)
@@ -39,10 +39,18 @@ namespace OpenAnt
         public static double CohesionWeight = 1.0;
         public static double SeparationWeight = 8.0;     // Very high priority to prevent overlap
         public static double WanderWeight = 1.0;
+        public static double AlignmentWeight = 1.2;
         
         // Interaction
         public static double InteractionDuration = 0.5;  // How long to stop and "talk" (seconds)
         public static double InteractionCooldown = 5.0;  // How long before talking again
+
+        public static double PheromoneCellSize = 28.0;
+        public static double PheromoneDepositPerSecond = 6.0;
+        public static double PheromoneEvaporationPerSecond = 0.25;
+        public static double PheromoneMaxCellStrength = 12.0;
+        public static double PheromoneMinDetectStrength = 0.15;
+        public static double PheromoneFollowWeight = 2.0;
         
         // Trail Following
         public static double TrailFollowingRadius = 40.0;

@@ -1,8 +1,7 @@
 using System;
+using System.Threading;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Media;
-using System.Windows.Shapes;
 using Point = System.Windows.Point;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
@@ -26,22 +25,32 @@ namespace OpenAnt
             Moving
         }
 
-        private Canvas _canvas;
-        private Ellipse _head = null!;
-        private Ellipse _thorax = null!;
-        private Ellipse _abdomen = null!;
-        private List<AntLeg> _legs = new List<AntLeg>();
+        private readonly List<AntLeg> _legs = new List<AntLeg>();
         // private Path _legsPath = null!; // Removed single path optimization
         
         // Transform
         public Point Position { get; private set; }
         public double Rotation { get; private set; } // Degrees
+        public bool IsVisible => _visible;
+        public double SizeScale { get; }
+
+        public Vector Forward
+        {
+            get
+            {
+                double rad = MathUtils.DegreesToRadians(Rotation);
+                return new Vector(Math.Cos(rad), Math.Sin(rad));
+            }
+        }
         
         private double _targetRotation;
         private static readonly Random _random = new Random();
+        private static int _nextId;
+        public int Id { get; }
+        private readonly bool _patrolClockwise;
 
         // Morandi Color Palette
-        private static readonly List<Brush> _morandiColors = new List<Brush>
+        private static readonly List<SolidColorBrush> _morandiColors = new List<SolidColorBrush>
         {
             new SolidColorBrush((Color)ColorConverter.ConvertFromString("#A4B7C9")), // Blue Grey
             new SolidColorBrush((Color)ColorConverter.ConvertFromString("#8FA899")), // Sage Green
@@ -55,6 +64,9 @@ namespace OpenAnt
             new SolidColorBrush((Color)ColorConverter.ConvertFromString("#E0CDB6")), // Cream
         };
         private Brush _antColor;
+        private readonly System.Windows.Media.Pen _femurPen;
+        private readonly System.Windows.Media.Pen _tibiaPen;
+        private bool _visible = true;
 
         private double _wanderTimer = 0;
         private AntMoveState _moveState = AntMoveState.Moving;
@@ -72,17 +84,28 @@ namespace OpenAnt
         private double _legUpdateTimer = 0;
 
         public AntBehaviorType BehaviorType { get; private set; }
+        public double PheromoneDepositScale { get; private set; } = 1.0;
 
-        public ProceduralAnt(Canvas canvas, AntBehaviorType behaviorType, double vividness = 0.0)
+        static ProceduralAnt()
         {
-            _canvas = canvas;
+            for (int i = 0; i < _morandiColors.Count; i++)
+            {
+                if (_morandiColors[i].CanFreeze) _morandiColors[i].Freeze();
+            }
+        }
+
+        public ProceduralAnt(AntBehaviorType behaviorType, double vividness = 0.0)
+        {
+            Id = Interlocked.Increment(ref _nextId);
             BehaviorType = behaviorType;
+            _patrolClockwise = _random.NextDouble() < 0.5;
+            SizeScale = PickSizeScale();
             Position = new Point(400, 225); // Center of 800x450
             Rotation = 0;
 
             // Pick random Morandi color
-            Brush baseBrush = _morandiColors[_random.Next(_morandiColors.Count)];
-            Color baseColor = ((SolidColorBrush)baseBrush).Color;
+            SolidColorBrush baseBrush = _morandiColors[_random.Next(_morandiColors.Count)];
+            Color baseColor = baseBrush.Color;
 
             // Apply vividness (0.0 to 1.0)
             if (vividness > 0)
@@ -98,26 +121,58 @@ namespace OpenAnt
             if (_antColor.CanFreeze) _antColor.Freeze();
 
             InitializeLegs();
-            InitializeBody();
+
+            _femurPen = new System.Windows.Media.Pen(_antColor, 0.8 * SizeScale) { StartLineCap = PenLineCap.Flat, EndLineCap = PenLineCap.Flat };
+            _tibiaPen = new System.Windows.Media.Pen(_antColor, 0.6 * SizeScale) { StartLineCap = PenLineCap.Flat, EndLineCap = PenLineCap.Flat };
+            if (_femurPen.CanFreeze) _femurPen.Freeze();
+            if (_tibiaPen.CanFreeze) _tibiaPen.Freeze();
             
             // Randomize personality
             _speedModifier = 0.8 + _random.NextDouble() * 0.4; // 0.8x to 1.2x
             _turnModifier = 0.8 + _random.NextDouble() * 0.4;  // 0.8x to 1.2x
             _stateDurationModifier = 0.8 + _random.NextDouble() * 0.5; // 0.8x to 1.3x
 
-            // Loner ants are faster and more restless
             if (BehaviorType == AntBehaviorType.Loner)
             {
-                _speedModifier *= 1.2;
-                _stateDurationModifier *= 0.7;
+                _speedModifier *= 1.05;
+                _turnModifier *= 1.15;
+                _stateDurationModifier *= 0.85;
+                PheromoneDepositScale = 1.6;
+            }
+            else if (BehaviorType == AntBehaviorType.Social)
+            {
+                _speedModifier *= 0.95;
+                _turnModifier *= 0.9;
+                _stateDurationModifier *= 1.05;
+                PheromoneDepositScale = 1.0;
+            }
+            else
+            {
+                _speedModifier *= 0.9;
+                _turnModifier *= 0.95;
+                _stateDurationModifier *= 1.1;
+                PheromoneDepositScale = 0.25;
             }
 
-            // Randomize initial state
-            _moveState = _random.NextDouble() > 0.5 ? AntMoveState.Moving : AntMoveState.Idle;
-            _stateTimer = _random.NextDouble() * 2.0;
+            if (SizeScale < 1.0)
+            {
+                _speedModifier *= 1.0 + (1.0 - SizeScale) * 0.35;
+                _turnModifier *= 1.0 + (1.0 - SizeScale) * 0.20;
+            }
+
+            _moveState = AntMoveState.Moving;
+            _stateTimer = 0.5 + _random.NextDouble() * 1.5;
             
             _currentSpeed = _moveState == AntMoveState.Moving ? AntConfig.MaxSpeed * _speedModifier : 0;
             _targetSpeed = _currentSpeed;
+        }
+
+        private static double PickSizeScale()
+        {
+            double r = _random.NextDouble();
+            if (r < 0.20) return 0.70;
+            if (r < 0.70) return 0.85;
+            return 1.0;
         }
 
         private Brush ApplyVividness(Color color, double factor)
@@ -165,33 +220,51 @@ namespace OpenAnt
 
         public void SetVisibility(bool visible)
         {
-            Visibility v = visible ? Visibility.Visible : Visibility.Collapsed;
-            if (_head != null) _head.Visibility = v;
-            if (_thorax != null) _thorax.Visibility = v;
-            if (_abdomen != null) _abdomen.Visibility = v;
-            foreach (var leg in _legs)
+            _visible = visible;
+        }
+
+        public void Draw(DrawingContext drawingContext)
+        {
+            if (!_visible) return;
+
+            for (int i = 0; i < _legs.Count; i++)
             {
-                leg.SetVisibility(visible);
+                _legs[i].Draw(drawingContext, _femurPen, _tibiaPen);
             }
+
+            DrawBody(drawingContext);
         }
 
-        private void InitializeBody()
+        private void DrawBody(DrawingContext drawingContext)
         {
-            _head = CreateBodyPart(AntConfig.HeadSize, AntConfig.HeadSize, _antColor);
-            _thorax = CreateBodyPart(AntConfig.ThoraxLength, AntConfig.ThoraxWidth, _antColor);
-            _abdomen = CreateBodyPart(AntConfig.AbdomenLength, AntConfig.AbdomenWidth, _antColor);
+            double headSize = AntConfig.HeadSize * SizeScale;
+            double thoraxLength = AntConfig.ThoraxLength * SizeScale;
+            double thoraxWidth = AntConfig.ThoraxWidth * SizeScale;
+            double abdomenLength = AntConfig.AbdomenLength * SizeScale;
+            double abdomenWidth = AntConfig.AbdomenWidth * SizeScale;
+
+            double headRadius = headSize / 2;
+            double thoraxHalfLength = thoraxLength / 2;
+            double abdomenHalfLength = abdomenLength / 2;
+
+            double overlap = 0.8;
+            double headOffsetX = (thoraxHalfLength + headRadius) * overlap;
+            double abdomenOffsetX = -(thoraxHalfLength + abdomenHalfLength) * overlap;
+
+            Point headPos = GetWorldPosition(new Point(headOffsetX, 0));
+            Point thoraxPos = Position;
+            Point abdomenPos = GetWorldPosition(new Point(abdomenOffsetX, 0));
+
+            DrawRotatedEllipse(drawingContext, headPos, headSize, headSize);
+            DrawRotatedEllipse(drawingContext, thoraxPos, thoraxLength, thoraxWidth);
+            DrawRotatedEllipse(drawingContext, abdomenPos, abdomenLength, abdomenWidth);
         }
 
-        private Ellipse CreateBodyPart(double width, double height, Brush fill)
+        private void DrawRotatedEllipse(DrawingContext drawingContext, Point center, double width, double height)
         {
-            var ellipse = new Ellipse
-            {
-                Width = width,
-                Height = height,
-                Fill = fill
-            };
-            _canvas.Children.Add(ellipse);
-            return ellipse;
+            drawingContext.PushTransform(new RotateTransform(Rotation, center.X, center.Y));
+            drawingContext.DrawEllipse(_antColor, null, center, width / 2, height / 2);
+            drawingContext.Pop();
         }
 
         private void InitializeLegs()
@@ -214,23 +287,32 @@ namespace OpenAnt
             double reachY = 6.0;
 
             // Leg 0: Left Front
-            _legs.Add(new AntLeg(_canvas, new Point(xFront, -yOffset), new Vector(reachX, -reachY), false, _antColor));
+            _legs.Add(new AntLeg(new Point(xFront, -yOffset), new Vector(reachX, -reachY), false));
             // Leg 1: Left Mid
-            _legs.Add(new AntLeg(_canvas, new Point(xMid, -yOffset), new Vector(0, -reachY * 1.2), false, _antColor));
+            _legs.Add(new AntLeg(new Point(xMid, -yOffset), new Vector(0, -reachY * 1.2), false));
             // Leg 2: Left Back
-            _legs.Add(new AntLeg(_canvas, new Point(xBack, -yOffset), new Vector(-reachX, -reachY), false, _antColor));
+            _legs.Add(new AntLeg(new Point(xBack, -yOffset), new Vector(-reachX, -reachY), false));
             
             // Leg 3: Right Front
-            _legs.Add(new AntLeg(_canvas, new Point(xFront, yOffset), new Vector(reachX, reachY), true, _antColor));
+            _legs.Add(new AntLeg(new Point(xFront, yOffset), new Vector(reachX, reachY), true));
             // Leg 4: Right Mid
-            _legs.Add(new AntLeg(_canvas, new Point(xMid, yOffset), new Vector(0, reachY * 1.2), true, _antColor));
+            _legs.Add(new AntLeg(new Point(xMid, yOffset), new Vector(0, reachY * 1.2), true));
             // Leg 5: Right Back
-            _legs.Add(new AntLeg(_canvas, new Point(xBack, yOffset), new Vector(-reachX, reachY), true, _antColor));
+            _legs.Add(new AntLeg(new Point(xBack, yOffset), new Vector(-reachX, reachY), true));
+
+            for (int i = 0; i < _legs.Count; i++)
+            {
+                _legs[i].SetScale(SizeScale);
+            }
         }
 
         private double _interactionTimer = 0;
         private double _interactionCooldownTimer = 0;
         private bool _isInteracting = false;
+        private ProceduralAnt? _interactionPartner;
+        private ProceduralAnt? _lastInteractionPartner;
+        private double _samePartnerCooldownTimer = 0;
+        private bool _swarmActive;
         
         // Trail Following State
         private ProceduralAnt? _leaderAnt;
@@ -239,11 +321,11 @@ namespace OpenAnt
         // Lazy State
         private bool _isLazy = false;
 
-        public void Update(double deltaTime, List<ProceduralAnt> neighbors, Point cursorPos)
+        public void Update(double deltaTime, List<ProceduralAnt> neighbors, Point cursorPos, double worldWidth, double worldHeight, PheromoneField? pheromones, bool swarmActive)
         {
-            UpdateBehavior(deltaTime, neighbors, cursorPos);
-            UpdatePhysics(deltaTime);
-            UpdateVisuals(deltaTime);
+            _swarmActive = swarmActive && BehaviorType == AntBehaviorType.Social;
+            UpdateBehavior(deltaTime, neighbors, cursorPos, worldWidth, worldHeight, pheromones);
+            UpdatePhysics(deltaTime, worldWidth, worldHeight, neighbors);
             
             _legUpdateTimer += deltaTime;
             if (_legUpdateTimer >= AntConfig.LegUpdateInterval)
@@ -253,10 +335,11 @@ namespace OpenAnt
             }
         }
 
-        private void UpdateBehavior(double deltaTime, List<ProceduralAnt> neighbors, Point cursorPos)
+        private void UpdateBehavior(double deltaTime, List<ProceduralAnt> neighbors, Point cursorPos, double worldWidth, double worldHeight, PheromoneField? pheromones)
         {
             // Interaction Logic
             if (_interactionCooldownTimer > 0) _interactionCooldownTimer -= deltaTime;
+            if (_samePartnerCooldownTimer > 0) _samePartnerCooldownTimer -= deltaTime;
 
             if (_isInteracting)
             {
@@ -270,9 +353,18 @@ namespace OpenAnt
                     // Separate after interaction
                     _moveState = AntMoveState.Moving;
                     _targetSpeed = AntConfig.MaxSpeed * _speedModifier;
-                    
-                    // Turn away randomly
-                    _targetRotation += 180 + (_random.NextDouble() * 60 - 30);
+
+                    if (_interactionPartner != null)
+                    {
+                        Vector away = Position - _interactionPartner.Position;
+                        if (away.LengthSquared > 0.0001)
+                        {
+                            double angle = MathUtils.RadiansToDegrees(Math.Atan2(away.Y, away.X));
+                            _targetRotation = angle + (_random.NextDouble() * 30 - 15);
+                        }
+                    }
+
+                    _interactionPartner = null;
                 }
                 else
                 {
@@ -288,28 +380,56 @@ namespace OpenAnt
             {
                 if (_moveState == AntMoveState.Moving)
                 {
-                    _moveState = AntMoveState.Idle;
-                    // Personalized wait duration
-                    _stateTimer = (0.3 + _random.NextDouble() * 1.5) * _stateDurationModifier;
-                    _targetSpeed = 0.0;
+                    double stopProb = 0.12;
+                    if (BehaviorType == AntBehaviorType.Loner) stopProb = 0.18;
+                    else if (BehaviorType == AntBehaviorType.EdgeDweller) stopProb = 0.10;
+
+                    if (_random.NextDouble() < stopProb)
+                    {
+                        _moveState = AntMoveState.Idle;
+                        double idleMean = BehaviorType == AntBehaviorType.Loner ? 0.55 : 0.28;
+                        _stateTimer = Clamp(SampleExp(idleMean) * _stateDurationModifier, 0.06, 1.6);
+                        _targetSpeed = 0.0;
+                    }
+                    else
+                    {
+                        _moveState = AntMoveState.Moving;
+                        double moveMean = BehaviorType == AntBehaviorType.Social ? 2.2 : (BehaviorType == AntBehaviorType.Loner ? 1.0 : 2.8);
+                        _stateTimer = Clamp(SampleExp(moveMean) * _stateDurationModifier, 0.35, 7.5);
+                        _targetSpeed = AntConfig.MaxSpeed * PickSpeedFactor() * _speedModifier;
+                    }
                 }
                 else
                 {
                     _moveState = AntMoveState.Moving;
-                    // Personalized move duration
-                    _stateTimer = (0.8 +  _random.NextDouble() * 2.5) * _stateDurationModifier;
-                    // Personalized target speed
-                    _targetSpeed = AntConfig.MaxSpeed * (0.6 + _random.NextDouble() * 0.4) * _speedModifier;
+                    double moveMean = BehaviorType == AntBehaviorType.Social ? 2.4 : (BehaviorType == AntBehaviorType.Loner ? 1.2 : 3.0);
+                    _stateTimer = Clamp(SampleExp(moveMean) * _stateDurationModifier, 0.35, 8.0);
+                    double speedFactor = Math.Max(0.25, PickSpeedFactor());
+                    _targetSpeed = AntConfig.MaxSpeed * speedFactor * _speedModifier;
                 }
             }
 
             _wanderTimer -= deltaTime;
             if (_wanderTimer <= 0)
             {
-                _wanderTimer = 1.0 + _random.NextDouble() * 2.0;
-                
-                // Base random turn
-                double turnRange = 90 * _turnModifier;
+                double minT = 1.0;
+                double maxT = 2.8;
+                double baseRange = 70;
+                if (BehaviorType == AntBehaviorType.Social)
+                {
+                    minT = 1.4; maxT = 3.8; baseRange = 45;
+                }
+                else if (BehaviorType == AntBehaviorType.Loner)
+                {
+                    minT = 0.35; maxT = 1.4; baseRange = 140;
+                }
+                else
+                {
+                    minT = 0.8; maxT = 2.2; baseRange = 55;
+                }
+
+                _wanderTimer = minT + _random.NextDouble() * (maxT - minT);
+                double turnRange = baseRange * _turnModifier;
                 _targetRotation = Rotation + (_random.NextDouble() * 2 - 1) * turnRange;
             }
 
@@ -322,10 +442,46 @@ namespace OpenAnt
             }
 
             // Apply social/environmental influences to target rotation every frame
-            ApplySteeringForces(neighbors, cursorPos);
+            ApplySteeringForces(neighbors, cursorPos, worldWidth, worldHeight, pheromones);
         }
 
-        private void ApplySteeringForces(List<ProceduralAnt> neighbors, Point cursorPos)
+        private static double SampleExp(double mean)
+        {
+            if (mean <= 0) return 0;
+            double u = 1.0 - _random.NextDouble();
+            return -Math.Log(u) * mean;
+        }
+
+        private static double Clamp(double v, double min, double max)
+        {
+            if (v < min) return min;
+            if (v > max) return max;
+            return v;
+        }
+
+        private double PickSpeedFactor()
+        {
+            double r = _random.NextDouble();
+            if (BehaviorType == AntBehaviorType.Social)
+            {
+                if (r < 0.06) return 0.10 + _random.NextDouble() * 0.20;
+                if (r < 0.88) return 0.45 + _random.NextDouble() * 0.35;
+                return 0.80 + _random.NextDouble() * 0.20;
+            }
+
+            if (BehaviorType == AntBehaviorType.Loner)
+            {
+                if (r < 0.18) return 0.05 + _random.NextDouble() * 0.25;
+                if (r < 0.62) return 0.25 + _random.NextDouble() * 0.40;
+                return 0.70 + _random.NextDouble() * 0.30;
+            }
+
+            if (r < 0.08) return 0.10 + _random.NextDouble() * 0.25;
+            if (r < 0.86) return 0.40 + _random.NextDouble() * 0.40;
+            return 0.75 + _random.NextDouble() * 0.25;
+        }
+
+        private void ApplySteeringForces(List<ProceduralAnt> neighbors, Point cursorPos, double worldWidth, double worldHeight, PheromoneField? pheromones)
         {
             Vector totalForce = new Vector(0, 0);
 
@@ -341,7 +497,8 @@ namespace OpenAnt
             double distToCursorSq = toCursor.LengthSquared;
             double cursorRepulsionRadSq = AntConfig.CursorRepulsionRadius * AntConfig.CursorRepulsionRadius;
             
-            if (distToCursorSq < cursorRepulsionRadSq)
+            bool cursorPanicking = distToCursorSq < cursorRepulsionRadSq;
+            if (cursorPanicking)
             {
                 // Panic!
                 _isLazy = false;
@@ -365,19 +522,66 @@ namespace OpenAnt
                 }
             }
 
+            double separationWeight = AntConfig.SeparationWeight;
+            double cohesionWeight = AntConfig.CohesionWeight;
+            double alignmentWeight = AntConfig.AlignmentWeight;
+            double pheromoneWeightBase = AntConfig.PheromoneFollowWeight;
+            double trailWeight = AntConfig.TrailSteeringWeight;
+            double edgeWeight = AntConfig.EdgeAttractionWeight;
+            double interactionChance = 0.004;
+
+            bool swarmActive = _swarmActive;
+
+            if (BehaviorType == AntBehaviorType.Social)
+            {
+                cohesionWeight *= 0.22;
+                alignmentWeight *= 0.30;
+                pheromoneWeightBase *= 0.22;
+                trailWeight *= 0.22;
+                separationWeight *= 1.00;
+                interactionChance = 0.0012;
+
+                if (swarmActive)
+                {
+                    cohesionWeight *= 3.0;
+                    alignmentWeight *= 2.4;
+                    pheromoneWeightBase *= 3.2;
+                    trailWeight *= 3.0;
+                    separationWeight *= 0.85;
+                    interactionChance = 0.008;
+                }
+            }
+            else if (BehaviorType == AntBehaviorType.Loner)
+            {
+                pheromoneWeightBase *= 0.35;
+                separationWeight *= 1.15;
+                interactionChance = 0.006;
+            }
+            else
+            {
+                cohesionWeight *= 0.5;
+                alignmentWeight *= 0.55;
+                trailWeight *= 0.35;
+                edgeWeight *= 1.15;
+                separationWeight *= 1.05;
+                interactionChance = 0.004;
+            }
+
             // 3. Edge Attraction (Only for Edge Dwellers)
             if (BehaviorType == AntBehaviorType.EdgeDweller)
             {
-                Vector edgeForce = GetEdgeAttraction();
-                double weight = AntConfig.EdgeAttractionWeight;
-                totalForce += edgeForce * weight;
+                Vector edgeForce = GetEdgeAttraction(worldWidth, worldHeight);
+                totalForce += edgeForce * edgeWeight;
             }
 
             // 2. Separation & Cohesion & Interaction
             Vector separationForce = new Vector(0, 0);
             Vector cohesionForce = new Vector(0, 0);
+            Vector alignmentForce = new Vector(0, 0);
             int neighborCount = 0;
             Vector centerOfMass = new Vector(0, 0);
+            Vector headingSum = new Vector(0, 0);
+            int movingNeighborCount = 0;
 
             // Optimization: neighbors list is now provided by SpatialGrid (already spatially filtered)
             
@@ -386,8 +590,8 @@ namespace OpenAnt
             // 2. Near edge/corner
             // 3. High neighbor count (cluster)
             
-            double w = _canvas.ActualWidth;
-            double h = _canvas.ActualHeight;
+            double w = worldWidth;
+            double h = worldHeight;
             double distLeft = Position.X;
             double distRight = w - Position.X;
             double distTop = Position.Y;
@@ -415,10 +619,12 @@ namespace OpenAnt
                         dist < AntConfig.InteractionRadius)
                     {
                         // Reduced chance to stop and interact: from 5% to 1% per frame
-                        if (_random.NextDouble() < 0.01)
+                        if ((_lastInteractionPartner != other || _samePartnerCooldownTimer <= 0) &&
+                            (other._lastInteractionPartner != this || other._samePartnerCooldownTimer <= 0) &&
+                            _random.NextDouble() < interactionChance)
                         {
-                            StartInteraction();
-                            other.StartInteraction();
+                            StartInteraction(other);
+                            other.StartInteraction(this);
                         }
                     }
 
@@ -426,20 +632,27 @@ namespace OpenAnt
                     centerOfMass += (Vector)other.Position;
                     neighborCount++;
 
+                    if (other._moveState == AntMoveState.Moving && other._currentSpeed > 0.1)
+                    {
+                        headingSum += other.Forward;
+                        movingNeighborCount++;
+                    }
+
                     // Separation: Push away if too close
-                    if (dist < AntConfig.SeparationRadius)
+                    double sepRad = AntConfig.SeparationRadius * 0.5 * (SizeScale + other.SizeScale);
+                    if (dist < sepRad)
                     {
                         // Stronger push when closer
                         Vector push = -toOther;
                         push.Normalize();
                         // Exponential separation force for "hard" collision avoidance
-                        separationForce += push * (1.0 - dist / AntConfig.SeparationRadius) * 2.0;
+                        separationForce += push * (1.0 - dist / sepRad) * 2.0;
                     }
                 }
             }
 
             // Lazy Update Logic
-            if (nearEdge && neighborCount >= AntConfig.LazyNeighborThreshold)
+            if (BehaviorType == AntBehaviorType.EdgeDweller && nearEdge && neighborCount >= AntConfig.LazyNeighborThreshold)
             {
                 // Enter lazy state with high probability
                  if (!_isLazy && _random.NextDouble() < 0.1) 
@@ -478,6 +691,21 @@ namespace OpenAnt
                 separationForce *= 0.5; 
             }
 
+            if (!cursorPanicking && BehaviorType != AntBehaviorType.EdgeDweller)
+            {
+                double band = 95.0;
+                if (distToEdge < band)
+                {
+                    double t = 1.0 - distToEdge / band;
+                    Vector toCenter = new Vector(worldWidth * 0.5 - Position.X, worldHeight * 0.5 - Position.Y);
+                    if (toCenter.LengthSquared > 0.0001)
+                    {
+                        toCenter.Normalize();
+                        totalForce += toCenter * (0.35 * t);
+                    }
+                }
+            }
+
             if (neighborCount > 0)
             {
                 // Cohesion Logic
@@ -488,20 +716,73 @@ namespace OpenAnt
                     {
                         centerOfMass /= neighborCount;
                         Vector toCenter = centerOfMass - (Vector)Position;
-                        toCenter.Normalize();
-                        cohesionForce = toCenter;
+                        double distToCenter = toCenter.Length;
+                        if (distToCenter > 0.0001)
+                        {
+                            double desired = AntConfig.SeparationRadius * 2.6 * SizeScale;
+                            double max = AntConfig.PerceptionRadius;
+                            if (desired > max - 1) desired = max - 1;
+                            double signed = (distToCenter - desired) / (max - desired);
+                            signed = Clamp(signed, -1.0, 1.0);
+                            cohesionForce = (toCenter / distToCenter) * signed;
+                        }
                     }
                 }
             }
 
+            if (movingNeighborCount > 0 && headingSum.LengthSquared > 0.001)
+            {
+                double strength = headingSum.Length / movingNeighborCount;
+                headingSum.Normalize();
+                alignmentForce = headingSum * strength;
+            }
+
+            if (!nearEdge && neighborCount >= 2)
+            {
+                double crowdT = (neighborCount - 2) / 12.0;
+                if (crowdT < 0) crowdT = 0;
+                if (crowdT > 1) crowdT = 1;
+
+                cohesionForce *= (1.0 - 0.85 * crowdT);
+                alignmentForce *= (1.0 - 0.70 * crowdT);
+                pheromoneWeightBase *= (1.0 - 0.75 * crowdT);
+                trailWeight *= (1.0 - 0.85 * crowdT);
+                separationWeight *= (1.0 + 0.45 * crowdT);
+            }
+
             // Apply Weights
-            totalForce += separationForce * AntConfig.SeparationWeight;
+            totalForce += separationForce * separationWeight;
             if (BehaviorType == AntBehaviorType.Social)
             {
-                totalForce += cohesionForce * AntConfig.CohesionWeight;
+                totalForce += cohesionForce * cohesionWeight;
+            }
+            if (BehaviorType != AntBehaviorType.Loner)
+            {
+                totalForce += alignmentForce * alignmentWeight;
+            }
+
+            if (!cursorPanicking && pheromones != null && BehaviorType != AntBehaviorType.EdgeDweller)
+            {
+                var sample = pheromones.Sample(Position);
+                if (sample.strength > 0)
+                {
+                    double edgeBand = 95.0;
+                    double edgeScale = distToEdge < edgeBand ? (distToEdge / edgeBand) : 1.0;
+                    totalForce += sample.direction * pheromoneWeightBase * edgeScale;
+                }
             }
 
             // 4. Trail Following
+            if (_leaderAnt != null)
+            {
+                Vector toLeader0 = _leaderAnt.Position - Position;
+                double tooClose = AntConfig.TrailFollowDistance * 0.7;
+                if (toLeader0.LengthSquared < tooClose * tooClose)
+                {
+                    _leaderAnt = null;
+                }
+            }
+
             if (_leaderAnt != null)
             {
                 double leaderRad = MathUtils.DegreesToRadians(_leaderAnt.Rotation);
@@ -514,7 +795,7 @@ namespace OpenAnt
                 if (distToTarget > 1.0)
                 {
                     seek.Normalize();
-                    totalForce += seek * AntConfig.TrailSteeringWeight;
+                    totalForce += seek * trailWeight;
                 }
                 
                 // Match speed
@@ -541,19 +822,23 @@ namespace OpenAnt
             }
         }
 
-        public void StartInteraction()
+        public void StartInteraction(ProceduralAnt partner)
         {
+            _leaderAnt = null;
             _isInteracting = true;
+            _interactionPartner = partner;
+            _lastInteractionPartner = partner;
+            _samePartnerCooldownTimer = 15.0 + _random.NextDouble() * 10.0;
             _interactionTimer = AntConfig.InteractionDuration + _random.NextDouble() * 0.5;
             _moveState = AntMoveState.Idle; // Stop moving
         }
 
-        private Vector GetEdgeAttraction()
+        private Vector GetEdgeAttraction(double worldWidth, double worldHeight)
         {
             Vector force = new Vector(0, 0);
 
-            double w = _canvas.ActualWidth;
-            double h = _canvas.ActualHeight;
+            double w = worldWidth;
+            double h = worldHeight;
             double range = AntConfig.EdgePreferenceRange;
 
             // Check distance to 4 edges
@@ -581,31 +866,22 @@ namespace OpenAnt
                 // Determine which edge we are near
                 if (minDist == distLeft)
                 {
-                    // Near Left Edge. Tangent is (0, -1) or (0, 1). 
-                    // Let's try to maintain current direction's sign
-                    double headingY = Math.Sin(MathUtils.DegreesToRadians(Rotation));
-                    force.Y = headingY > 0 ? 1 : -1;
+                    force.Y = _patrolClockwise ? 1 : -1;
                     if (distLeft < 20) force.X = 0.5; // Push away slightly if too close
                 }
                 else if (minDist == distRight)
                 {
-                    // Near Right Edge.
-                    double headingY = Math.Sin(MathUtils.DegreesToRadians(Rotation));
-                    force.Y = headingY > 0 ? 1 : -1;
+                    force.Y = _patrolClockwise ? 1 : -1;
                     if (distRight < 20) force.X = -0.5;
                 }
                 else if (minDist == distTop)
                 {
-                    // Near Top Edge.
-                    double headingX = Math.Cos(MathUtils.DegreesToRadians(Rotation));
-                    force.X = headingX > 0 ? 1 : -1;
+                    force.X = _patrolClockwise ? 1 : -1;
                     if (distTop < 20) force.Y = 0.5;
                 }
                 else if (minDist == distBottom)
                 {
-                    // Near Bottom Edge.
-                    double headingX = Math.Cos(MathUtils.DegreesToRadians(Rotation));
-                    force.X = headingX > 0 ? 1 : -1;
+                    force.X = _patrolClockwise ? 1 : -1;
                     if (distBottom < 20) force.Y = -0.5;
                 }
                 
@@ -626,7 +902,8 @@ namespace OpenAnt
 
                 Vector toOther = other.Position - this.Position;
                 double distSq = toOther.LengthSquared;
-                double collisionRadSq = AntConfig.HardCollisionRadius * AntConfig.HardCollisionRadius;
+                double collisionRad = AntConfig.HardCollisionRadius * 0.5 * (SizeScale + other.SizeScale);
+                double collisionRadSq = collisionRad * collisionRad;
 
                 if (distSq < collisionRadSq)
                 {
@@ -634,7 +911,7 @@ namespace OpenAnt
                     if (dist < 0.1) dist = 0.1; // Avoid div by zero
 
                     // Calculate overlap
-                    double overlap = AntConfig.HardCollisionRadius - dist;
+                    double overlap = collisionRad - dist;
                     
                     // Direction to push away
                     Vector pushDir = toOther / dist; // Normalize
@@ -645,7 +922,7 @@ namespace OpenAnt
             }
         }
 
-        private void UpdatePhysics(double deltaTime)
+        private void UpdatePhysics(double deltaTime, double worldWidth, double worldHeight, List<ProceduralAnt> neighbors)
         {
             // Update rotation
             // Lerp rotation to target
@@ -685,11 +962,13 @@ namespace OpenAnt
             Vector velocity = new Vector(Math.Cos(rad), Math.Sin(rad)) * _currentSpeed;
             
             Position += velocity * deltaTime;
+
+            ResolveCollisions(neighbors);
             
             // Keep in bounds (Steer away from edges instead of hard bounce)
              double padding = 50; // Start steering earlier
-             double width = _canvas.ActualWidth;
-             double height = _canvas.ActualHeight;
+             double width = worldWidth;
+             double height = worldHeight;
              
              // Soft boundary steering
              if (Position.X < padding)
@@ -719,6 +998,39 @@ namespace OpenAnt
 
         private void UpdateTrailLeader(List<ProceduralAnt> neighbors)
         {
+            double followProb = AntConfig.TrailFollowProbability;
+            double breakProb = AntConfig.TrailBreakProbability;
+
+            if (BehaviorType == AntBehaviorType.Social)
+            {
+                followProb *= 0.6;
+                breakProb *= 1.1;
+
+                if (_swarmActive)
+                {
+                    followProb *= 6.0;
+                    breakProb *= 0.55;
+                }
+            }
+            else if (BehaviorType == AntBehaviorType.Loner)
+            {
+                followProb *= 0.6;
+                breakProb *= 1.8;
+            }
+            else
+            {
+                followProb *= 0.25;
+                breakProb *= 1.4;
+            }
+
+            if (neighbors.Count >= 8)
+            {
+                double crowdT = (neighbors.Count - 8) / 10.0;
+                if (crowdT < 0) crowdT = 0;
+                if (crowdT > 1) crowdT = 1;
+                followProb *= (1.0 - 0.75 * crowdT);
+            }
+
             // 1. Validate current leader if exists
             if (_leaderAnt != null)
             {
@@ -729,7 +1041,7 @@ namespace OpenAnt
                  // If leader is too far, or stopped, or we randomly decide to break
                  if (distSq > maxDist * maxDist || 
                      _leaderAnt._moveState == AntMoveState.Idle ||
-                     _random.NextDouble() < AntConfig.TrailBreakProbability)
+                     _random.NextDouble() < breakProb)
                  {
                      _leaderAnt = null; // Lost the trail
                  }
@@ -739,7 +1051,7 @@ namespace OpenAnt
             if (_leaderAnt == null)
             {
                  // Probability check first to save perf
-                 if (_random.NextDouble() < AntConfig.TrailFollowProbability)
+                 if (_random.NextDouble() < followProb)
                  {
                      double bestDistSq = double.MaxValue;
                      ProceduralAnt? bestCandidate = null;
@@ -752,6 +1064,8 @@ namespace OpenAnt
                          if (n == this) continue;
                          if (n._moveState == AntMoveState.Idle) continue;
                          if (n._leaderAnt == this) continue; // Don't follow someone following me (simple cycle break)
+                         if (n._leaderAnt != null) continue;
+                         if (n.Id >= Id) continue;
                          
                          Vector toN = n.Position - Position;
                          double distSq = toN.LengthSquared;
@@ -846,80 +1160,11 @@ namespace OpenAnt
             }
         }
 
-        private void UpdateVisuals(double deltaTime)
-        {
-            // Position
-            Canvas.SetLeft(_head, Position.X - AntConfig.HeadSize/2);
-            Canvas.SetTop(_head, Position.Y - AntConfig.HeadSize/2);
-            
-            Canvas.SetLeft(_thorax, Position.X - AntConfig.ThoraxLength/2);
-            Canvas.SetTop(_thorax, Position.Y - AntConfig.ThoraxWidth/2);
-            
-            Canvas.SetLeft(_abdomen, Position.X - AntConfig.AbdomenLength/2);
-            Canvas.SetTop(_abdomen, Position.Y - AntConfig.AbdomenWidth/2);
-
-            // Rotation
-            var rotateTransform = new RotateTransform(Rotation, AntConfig.ThoraxLength/2, AntConfig.ThoraxWidth/2);
-            // We need to rotate around the center of the ant (Thorax center)
-            // But individual parts need local rotation + global position
-            // Simpler: Just rotate the whole group if we had one.
-            // Since we don't, we update RenderTransforms of parts.
-            
-            // Actually, we need to position parts relative to body center, then rotate.
-            // Simplified for now: Just rotate parts around their own centers? No.
-            // We need to calculate world positions of parts based on Body Rotation.
-            
-            UpdateBodyParts();
-        }
-
-        private void UpdateBodyParts()
-        {
-            // Calculate part positions based on body position and rotation
-            // Center is Position
-            
-            // Re-calculate offsets based on actual sizes to ensure proper connection and overlap
-            double headRadius = AntConfig.HeadSize / 2;
-            double thoraxHalfLength = AntConfig.ThoraxLength / 2;
-            double abdomenHalfLength = AntConfig.AbdomenLength / 2;
-            
-            // Overlap factor (0.8 means 20% overlap to hide gaps)
-            double overlap = 0.8; 
-            
-            // Relative X positions (Head is +X, Abdomen is -X)
-            double headOffsetX = (thoraxHalfLength + headRadius) * overlap;
-            double abdomenOffsetX = -(thoraxHalfLength + abdomenHalfLength) * overlap;
-
-            // Head is forward (positive X relative to body)
-            Point headPos = GetWorldPosition(new Point(headOffsetX, 0));
-            // Thorax is center
-            Point thoraxPos = Position;
-            // Abdomen is back
-            Point abdomenPos = GetWorldPosition(new Point(abdomenOffsetX, 0));
-
-            UpdatePart(_head, headPos, Rotation, AntConfig.HeadSize, AntConfig.HeadSize);
-            UpdatePart(_thorax, thoraxPos, Rotation, AntConfig.ThoraxLength, AntConfig.ThoraxWidth);
-            UpdatePart(_abdomen, abdomenPos, Rotation, AntConfig.AbdomenLength, AntConfig.AbdomenWidth);
-        }
-
-        private void UpdatePart(Ellipse part, Point center, double rotation, double width, double height)
-        {
-            if (part == null) return;
-            
-            // Position top-left
-            Canvas.SetLeft(part, center.X - width/2);
-            Canvas.SetTop(part, center.Y - height/2);
-            
-            // Rotation
-            part.RenderTransform = new RotateTransform(rotation, width/2, height/2);
-        }
-
         private Point GetWorldPosition(Point localPos)
         {
             // Rotate localPos by Rotation
             Vector rotated = MathUtils.RotateVector((Vector)localPos, Rotation);
             return Position + rotated;
         }
-
-        // All leg logic removed for now.
     }
 }

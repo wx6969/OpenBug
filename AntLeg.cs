@@ -1,8 +1,6 @@
 using System;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Media;
-using System.Windows.Shapes;
 using Point = System.Windows.Point;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
@@ -11,16 +9,13 @@ namespace OpenAnt
 {
     public class AntLeg
     {
-        private Canvas _canvas;
-        private Line _femur;
-        private Line _tibia;
-
         // Configuration
-        private Point _bodyAttachmentOffset; 
-        private Vector _defaultFootOffset;   
-        private double _segment1Length;
-        private double _segment2Length;
+        private Point _baseBodyAttachmentOffset; 
+        private Vector _baseDefaultFootOffset;   
+        private double _baseSegment1Length;
+        private double _baseSegment2Length;
         private bool _isRightSide;
+        private double _scale = 1.0;
 
         // State
         public Point CurrentFootPosition { get; private set; } // World space
@@ -32,42 +27,25 @@ namespace OpenAnt
         private Point _stepTargetPos;
         private double _stepProgress = 0; // 0 to 1
 
-        public AntLeg(Canvas canvas, Point bodyAttachmentOffset, Vector defaultFootOffset, bool isRightSide, Brush legColor)
+        public AntLeg(Point bodyAttachmentOffset, Vector defaultFootOffset, bool isRightSide)
         {
-            _canvas = canvas;
-            _bodyAttachmentOffset = bodyAttachmentOffset;
-            _defaultFootOffset = defaultFootOffset;
+            _baseBodyAttachmentOffset = bodyAttachmentOffset;
+            _baseDefaultFootOffset = defaultFootOffset;
             _isRightSide = isRightSide;
             
-            _segment1Length = AntConfig.LegSegment1Length;
-            _segment2Length = AntConfig.LegSegment2Length;
-            
-            // Initialize visuals
-            _femur = new Line
-            {
-                Stroke = legColor,
-                StrokeThickness = 0.8,
-                StrokeEndLineCap = PenLineCap.Flat,
-                StrokeStartLineCap = PenLineCap.Flat
-            };
-            _tibia = new Line
-            {
-                Stroke = legColor,
-                StrokeThickness = 0.6,
-                StrokeEndLineCap = PenLineCap.Flat,
-                StrokeStartLineCap = PenLineCap.Flat
-            };
-
-            // Add behind body
-            _canvas.Children.Add(_femur);
-            _canvas.Children.Add(_tibia);
+            _baseSegment1Length = AntConfig.LegSegment1Length;
+            _baseSegment2Length = AntConfig.LegSegment2Length;
         }
 
-        public void SetVisibility(bool visible)
+        public void SetScale(double scale)
         {
-            Visibility v = visible ? Visibility.Visible : Visibility.Collapsed;
-            if (_femur != null) _femur.Visibility = v;
-            if (_tibia != null) _tibia.Visibility = v;
+            _scale = scale <= 0 ? 1.0 : scale;
+        }
+
+        public void Draw(DrawingContext drawingContext, System.Windows.Media.Pen femurPen, System.Windows.Media.Pen tibiaPen)
+        {
+            drawingContext.DrawLine(femurPen, CurrentRootPosition, CurrentKneePosition);
+            drawingContext.DrawLine(tibiaPen, CurrentKneePosition, CurrentFootPosition);
         }
 
         public void InitializePosition(Point bodyPos, double rotation)
@@ -108,7 +86,8 @@ namespace OpenAnt
                 if (canStep)
                 {
                     double distSq = (idealFoot - CurrentFootPosition).LengthSquared;
-                    if (distSq > AntConfig.StepTriggerThreshold * AntConfig.StepTriggerThreshold)
+                    double stepTrigger = AntConfig.StepTriggerThreshold * _scale;
+                    if (distSq > stepTrigger * stepTrigger)
                     {
                         StartStep(idealFoot, bodyVelocity);
                     }
@@ -136,7 +115,7 @@ namespace OpenAnt
 
         private Point GetWorldAttachment(Point bodyPos, double rotation)
         {
-            Vector offset = (Vector)_bodyAttachmentOffset;
+            Vector offset = (Vector)_baseBodyAttachmentOffset * _scale;
             Vector rotated = MathUtils.RotateVector(offset, rotation);
             return bodyPos + rotated;
         }
@@ -144,7 +123,7 @@ namespace OpenAnt
         private Point GetIdealFootPosition(Point bodyPos, double rotation)
         {
             // The foot wants to be at Attachment + DefaultOffset (rotated)
-            Vector totalOffset = (Vector)(_bodyAttachmentOffset) + _defaultFootOffset;
+            Vector totalOffset = ((Vector)_baseBodyAttachmentOffset + _baseDefaultFootOffset) * _scale;
             Vector rotated = MathUtils.RotateVector(totalOffset, rotation);
             return bodyPos + rotated;
         }
@@ -159,10 +138,13 @@ namespace OpenAnt
             Vector toTarget = target - root;
             double c = toTarget.Length;
 
+            double seg1 = _baseSegment1Length * _scale;
+            double seg2 = _baseSegment2Length * _scale;
+
             // Clamp reach
-            if (c > _segment1Length + _segment2Length)
+            if (c > seg1 + seg2)
             {
-                c = _segment1Length + _segment2Length;
+                c = seg1 + seg2;
                 toTarget.Normalize();
                 target = root + toTarget * c;
             }
@@ -172,7 +154,7 @@ namespace OpenAnt
             // cos(B) = (a^2 + c^2 - b^2) / (2ac)
             // B is angle at Root between Target and Knee
 
-            double cosAngle = (_segment1Length * _segment1Length + c * c - _segment2Length * _segment2Length) / (2 * _segment1Length * c);
+            double cosAngle = (seg1 * seg1 + c * c - seg2 * seg2) / (2 * seg1 * c);
             
             // Clamp for safety
             if (cosAngle < -1) cosAngle = -1;
@@ -209,30 +191,13 @@ namespace OpenAnt
             // Calculate both potential knee points. Pick the one that matches "Outward" direction relative to body heading?
             // Simple heuristic: If IsRightSide, we want the knee to have a specific winding?
             
-            Vector kneePos = new Vector(Math.Cos(kneeAngleRad) * _segment1Length, Math.Sin(kneeAngleRad) * _segment1Length);
+            Vector kneePos = new Vector(Math.Cos(kneeAngleRad) * seg1, Math.Sin(kneeAngleRad) * seg1);
             Point knee = root + kneePos;
 
             // Update state instead of lines
             CurrentRootPosition = root;
             CurrentKneePosition = knee;
-
-            // Update visuals
-            _femur.X1 = root.X;
-            _femur.Y1 = root.Y;
-            _femur.X2 = knee.X;
-            _femur.Y2 = knee.Y;
-
-            _tibia.X1 = knee.X;
-            _tibia.Y1 = knee.Y;
-            _tibia.X2 = target.X;
-            _tibia.Y2 = target.Y;
-
-        }
-        
-        public void Cleanup()
-        {
-            _canvas.Children.Remove(_femur);
-            _canvas.Children.Remove(_tibia);
+            CurrentFootPosition = target;
         }
     }
 }

@@ -11,6 +11,6 @@
         WindowState="Maximized">
     <Grid x:Name="MainGrid">
         <!-- Ant will be rendered here -->
-        <Canvas x:Name="WorldCanvas" />
+        <local:AntSurface x:Name="WorldSurface" />
     </Grid>
 </Window>
